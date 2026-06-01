@@ -1,20 +1,13 @@
 """
-MIDI Music Game - Main Entry Point
-Orchestrates the game loop with MIDI input and sheet music parsing
+MIDI Music Game - Note Guessing Game
+Asks the player to play specific notes and provides feedback on timing and velocity
 """
 
 import sys
-from pathlib import Path
+import random
 from midi_handler import MIDIHandler
-from sheet_music_parser import SheetMusicParser
 from note_comparator import NoteComparator
 import time
-
-def list_sheet_files():
-    """List all MusicXML files in current directory"""
-    musicxml_files = list(Path('.').glob('*.musicxml'))
-    mxl_files = list(Path('.').glob('*.mxl'))
-    return musicxml_files + mxl_files
 
 def select_midi_device():
     """Let user select a MIDI device"""
@@ -38,100 +31,167 @@ def select_midi_device():
             pass
         print("Invalid selection. Try again.")
 
-def select_sheet_music():
-    """Let user select a sheet music file"""
-    files = list_sheet_files()
+def generate_target_notes(count=5):
+    """
+    Generate random target notes for the player to play
     
-    if not files:
-        print("❌ No MusicXML files found in current directory.")
-        print("📝 Please add a .musicxml or .mxl file or create one with MuseScore.")
-        return None
+    Args:
+        count: Number of notes to generate (default 5)
     
-    print("\n🎵 Available Sheet Music Files:")
-    for i, file in enumerate(files):
-        print(f"  {i}: {file.name}")
-    
-    while True:
-        try:
-            choice = int(input("\nSelect file (enter number): "))
-            if 0 <= choice < len(files):
-                return str(files[choice])
-        except ValueError:
-            pass
-        print("Invalid selection. Try again.")
+    Returns:
+        List of MIDI note numbers
+    """
+    # Generate random notes in a reasonable range (C4 to C6, MIDI 60-84)
+    target_notes = [random.randint(60, 84) for _ in range(count)]
+    return target_notes
 
-def play_game(midi_device: str, sheet_file: str):
-    """Main game loop"""
+def midi_number_to_note_name(midi_num):
+    """
+    Convert MIDI note number to note name
+    
+    Args:
+        midi_num: MIDI note number (0-127)
+    
+    Returns:
+        Note name string (e.g., "C4", "D#5")
+    """
+    note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    octave = (midi_num // 12) - 1
+    note = note_names[midi_num % 12]
+    return f"{note}{octave}"
+
+def play_round(midi_device: str, round_num: int, notes_per_round: int = 5):
+    """
+    Play a single round of the note guessing game
+    
+    Args:
+        midi_device: Selected MIDI device name
+        round_num: Current round number
+        notes_per_round: Number of notes to play in this round
+    """
     
     # Initialize MIDI handler
-    print("\n🎹 Initializing MIDI...")
+    print(f"\n🎹 Initializing MIDI for Round {round_num}...")
     midi_handler = MIDIHandler(midi_device)
     if not midi_handler.connect():
-        return
+        return False
     
-    # Initialize sheet music parser
-    print("🎵 Loading sheet music...")
-    parser = SheetMusicParser(sheet_file)
-    if not parser.load():
-        return
+    # Generate target notes
+    print(f"\n📝 Generating {notes_per_round} random notes...")
+    target_notes = generate_target_notes(notes_per_round)
+    target_note_names = [midi_number_to_note_name(note) for note in target_notes]
     
-    # Initialize comparator
-    comparator = NoteComparator()
+    print(f"\n✅ Ready to play! You will play {notes_per_round} notes.")
+    print(f"📋 Target notes: {', '.join(target_note_names)}\n")
     
-    # Get sheet notes
-    sheet_notes = parser.get_notes()
-    total_duration = parser.get_duration()
+    # Play each note
+    played_notes = []
+    results = []
     
-    print(f"\n✅ Setup complete!")
-    print(f"   Tempo: {parser.tempo} BPM")
-    print(f"   Notes in piece: {len(sheet_notes)}")
-    print(f"   Total duration: {total_duration:.1f} seconds")
+    for i, target_midi in enumerate(target_notes):
+        target_name = target_note_names[i]
+        print(f"\n🎵 Note {i+1}/{notes_per_round}: Play {target_name}")
+        print("   (Press ENTER when ready, then play the note and release it)")
+        input()
+        
+        # Listen for a single note
+        print("   🎧 Listening...")
+        start_time = time.time()
+        
+        # Listen for MIDI note on/off
+        note_played = None
+        note_on_time = None
+        note_off_time = None
+        velocity = 0
+        
+        # We'll listen for up to 5 seconds for a note
+        while time.time() - start_time < 5:
+            try:
+                # Get MIDI messages
+                msg = midi_handler.input.get_message()
+                if msg:
+                    message, data = msg
+                    
+                    # Check for note on message
+                    if message.type == 'note_on' and message.velocity > 0:
+                        note_played = message.note
+                        velocity = message.velocity
+                        note_on_time = time.time()
+                        print(f"      🎹 Note detected: {midi_number_to_note_name(note_played)} (velocity: {velocity})")
+                    
+                    # Check for note off message
+                    elif (message.type == 'note_off' or 
+                          (message.type == 'note_on' and message.velocity == 0)):
+                        if note_played is not None:
+                            note_off_time = time.time()
+                            
+                            # Calculate hold duration
+                            hold_duration = note_off_time - note_on_time
+                            
+                            # Determine if note is correct
+                            is_correct = (note_played == target_midi)
+                            
+                            # Store result
+                            result = {
+                                'target': target_midi,
+                                'played': note_played,
+                                'correct': is_correct,
+                                'hold_duration': hold_duration,
+                                'velocity': velocity
+                            }
+                            results.append(result)
+                            played_notes.append(note_played)
+                            
+                            # Print feedback
+                            if is_correct:
+                                print(f"      ✅ Correct! Held for {hold_duration:.2f}s at velocity {velocity}")
+                            else:
+                                print(f"      ❌ Wrong note! Played {midi_number_to_note_name(note_played)} instead. Held for {hold_duration:.2f}s at velocity {velocity}")
+                            
+                            break
+            except:
+                pass
+            
+            time.sleep(0.01)
+        
+        # Timeout handling
+        if note_played is None:
+            print(f"      ❌ No note detected - timeout!")
+            result = {
+                'target': target_midi,
+                'played': None,
+                'correct': False,
+                'hold_duration': 0,
+                'velocity': 0
+            }
+            results.append(result)
     
-    print("\n🎮 Ready to play! Press ENTER to start listening...")
-    input()
+    # Disconnect MIDI
+    midi_handler.disconnect()
     
-    # Listen for MIDI input
-    print("🎧 Listening for notes (playing along now)...\n")
-    
-    def on_note(note, type_):
-        if type_ == 'note_on':
-            note_name = MIDIHandler().get_note_name(note.note)
-            print(f"  🎹 {note_name} (velocity: {note.velocity})")
-    
-    played_notes = midi_handler.listen(duration=total_duration + 5, callback=on_note)
-    
-    # Compare results
+    # Print summary
     print("\n" + "="*50)
-    print("📊 RESULTS")
+    print(f"📊 ROUND {round_num} RESULTS")
     print("="*50)
     
-    results = comparator.compare_sequences(sheet_notes[:len(played_notes)], played_notes)
+    correct_count = sum(1 for r in results if r['correct'])
+    print(f"Correct: {correct_count}/{notes_per_round}")
+    print(f"Accuracy: {(correct_count / notes_per_round * 100):.1f}%")
     
-    print(f"Total notes: {results['total_notes']}")
-    print(f"Correct: {results['correct_notes']}")
-    print(f"Accuracy: {results['accuracy_percentage']:.1f}%")
-    print(f"Average score: {results['average_accuracy_score']:.1f}/100")
+    print("\n📝 Detailed Breakdown:")
+    for i, result in enumerate(results):
+        status = "✅" if result['correct'] else "❌"
+        played_name = midi_number_to_note_name(result['played']) if result['played'] else "No note"
+        target_name = midi_number_to_note_name(result['target'])
+        print(f"  {i+1}. {status} Target: {target_name} | Played: {played_name} | Duration: {result['hold_duration']:.2f}s | Velocity: {result['velocity']}")
     
-    if results['missed_notes'] > 0:
-        print(f"⚠️  Missed {results['missed_notes']} notes")
-    
-    print("\n📝 Detailed Results:")
-    for i, result in enumerate(results['results'][:10]):  # Show first 10
-        feedback = comparator.get_feedback(result)
-        print(f"  {i+1}. {feedback}")
-    
-    if len(results['results']) > 10:
-        print(f"  ... and {len(results['results']) - 10} more notes")
-    
-    # Disconnect
-    midi_handler.disconnect()
-    print("\n✅ Game complete!")
+    return True
 
 def main():
     """Main function"""
     print("╔════════════════════════════════════════╗")
-    print("║     🎵 MIDI MUSIC GAME 🎵             ║")
-    print("║   Learn music with your MIDI keyboard ║")
+    print("║     🎵 MIDI NOTE GUESSING GAME 🎵     ║")
+    print("║    Play the notes we ask for!          ║")
     print("╚════════════════════════════════════════╝\n")
     
     # Select MIDI device
@@ -139,13 +199,19 @@ def main():
     if not midi_device:
         return
     
-    # Select sheet music
-    sheet_file = select_sheet_music()
-    if not sheet_file:
-        return
-    
-    # Play game
-    play_game(midi_device, sheet_file)
+    # Play rounds
+    round_num = 1
+    while True:
+        play_round(midi_device, round_num)
+        
+        # Ask if player wants to play again
+        print("\n" + "="*50)
+        play_again = input("Play another round? (yes/no): ").strip().lower()
+        if play_again not in ['yes', 'y']:
+            print("\n👋 Thanks for playing!")
+            break
+        
+        round_num += 1
 
 if __name__ == "__main__":
     try:
@@ -155,4 +221,6 @@ if __name__ == "__main__":
         sys.exit(0)
     except Exception as e:
         print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
