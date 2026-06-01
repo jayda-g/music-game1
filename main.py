@@ -6,7 +6,6 @@ Asks the player to play specific notes and provides feedback on timing and veloc
 import sys
 import random
 from midi_handler import MIDIHandler
-from note_comparator import NoteComparator
 import time
 
 def select_midi_device():
@@ -60,6 +59,45 @@ def midi_number_to_note_name(midi_num):
     note = note_names[midi_num % 12]
     return f"{note}{octave}"
 
+def listen_for_single_note(midi_handler, timeout=5):
+    """
+    Listen for a single note press and release
+    
+    Args:
+        midi_handler: MIDIHandler instance
+        timeout: Maximum seconds to listen
+    
+    Returns:
+        Dictionary with note info or None if timeout
+    """
+    # Variables to track note state
+    note_data = {'note': None, 'velocity': 0, 'on_time': None, 'off_time': None}
+    
+    # Callback to handle MIDI messages
+    def note_callback(midi_note, msg_type):
+        if msg_type == 'note_on':
+            # Note was pressed
+            note_data['note'] = midi_note.note
+            note_data['velocity'] = midi_note.velocity
+            note_data['on_time'] = midi_note.timestamp
+        elif msg_type == 'note_off':
+            # Note was released
+            note_data['off_time'] = midi_note.timestamp
+    
+    # Listen for the timeout duration
+    midi_handler.recorded_notes = []  # Clear previous notes
+    midi_handler.listen(duration=timeout, callback=note_callback)
+    
+    # Check if we got a note
+    if note_data['note'] is not None and note_data['off_time'] is not None:
+        return {
+            'note': note_data['note'],
+            'velocity': note_data['velocity'],
+            'duration': note_data['off_time'] - note_data['on_time']
+        }
+    
+    return None
+
 def play_round(midi_device: str, round_num: int, notes_per_round: int = 5):
     """
     Play a single round of the note guessing game
@@ -85,83 +123,53 @@ def play_round(midi_device: str, round_num: int, notes_per_round: int = 5):
     print(f"📋 Target notes: {', '.join(target_note_names)}\n")
     
     # Play each note
-    played_notes = []
     results = []
     
     for i, target_midi in enumerate(target_notes):
         target_name = target_note_names[i]
         print(f"\n🎵 Note {i+1}/{notes_per_round}: Play {target_name}")
-        print("   (Press ENTER when ready, then play the note and release it)")
+        print("   (Press ENTER when ready, then play the note)")
         input()
         
-        # Listen for a single note
-        print("   🎧 Listening...")
-        start_time = time.time()
+        # Listen for a single note with timeout
+        print("   🎧 Listening for 5 seconds...")
+        note_result = listen_for_single_note(midi_handler, timeout=5)
         
-        # Listen for MIDI note on/off
-        note_played = None
-        note_on_time = None
-        note_off_time = None
-        velocity = 0
-        
-        # We'll listen for up to 5 seconds for a note
-        while time.time() - start_time < 5:
-            try:
-                # Get MIDI messages
-                msg = midi_handler.input.get_message()
-                if msg:
-                    message, data = msg
-                    
-                    # Check for note on message
-                    if message.type == 'note_on' and message.velocity > 0:
-                        note_played = message.note
-                        velocity = message.velocity
-                        note_on_time = time.time()
-                        print(f"      🎹 Note detected: {midi_number_to_note_name(note_played)} (velocity: {velocity})")
-                    
-                    # Check for note off message
-                    elif (message.type == 'note_off' or 
-                          (message.type == 'note_on' and message.velocity == 0)):
-                        if note_played is not None:
-                            note_off_time = time.time()
-                            
-                            # Calculate hold duration
-                            hold_duration = note_off_time - note_on_time
-                            
-                            # Determine if note is correct
-                            is_correct = (note_played == target_midi)
-                            
-                            # Store result
-                            result = {
-                                'target': target_midi,
-                                'played': note_played,
-                                'correct': is_correct,
-                                'hold_duration': hold_duration,
-                                'velocity': velocity
-                            }
-                            results.append(result)
-                            played_notes.append(note_played)
-                            
-                            # Print feedback
-                            if is_correct:
-                                print(f"      ✅ Correct! Held for {hold_duration:.2f}s at velocity {velocity}")
-                            else:
-                                print(f"      ❌ Wrong note! Played {midi_number_to_note_name(note_played)} instead. Held for {hold_duration:.2f}s at velocity {velocity}")
-                            
-                            break
-            except:
-                pass
+        if note_result:
+            # We got a note!
+            played_midi = note_result['note']
+            velocity = note_result['velocity']
+            hold_duration = note_result['duration']
+            is_correct = (played_midi == target_midi)
             
-            time.sleep(0.01)
-        
-        # Timeout handling
-        if note_played is None:
+            played_name = midi_number_to_note_name(played_midi)
+            
+            # Determine feedback
+            if is_correct:
+                print(f"      ✅ Correct! Played {played_name}")
+            else:
+                print(f"      ❌ Wrong! Played {played_name} instead of {target_name}")
+            
+            print(f"      ⏱️  Held for {hold_duration:.2f}s")
+            print(f"      💪 Velocity: {velocity}/127")
+            
+            # Store result
+            result = {
+                'target': target_midi,
+                'played': played_midi,
+                'correct': is_correct,
+                'duration': hold_duration,
+                'velocity': velocity
+            }
+            results.append(result)
+        else:
+            # Timeout - no note detected
             print(f"      ❌ No note detected - timeout!")
             result = {
                 'target': target_midi,
                 'played': None,
                 'correct': False,
-                'hold_duration': 0,
+                'duration': 0,
                 'velocity': 0
             }
             results.append(result)
@@ -181,9 +189,13 @@ def play_round(midi_device: str, round_num: int, notes_per_round: int = 5):
     print("\n📝 Detailed Breakdown:")
     for i, result in enumerate(results):
         status = "✅" if result['correct'] else "❌"
-        played_name = midi_number_to_note_name(result['played']) if result['played'] else "No note"
         target_name = midi_number_to_note_name(result['target'])
-        print(f"  {i+1}. {status} Target: {target_name} | Played: {played_name} | Duration: {result['hold_duration']:.2f}s | Velocity: {result['velocity']}")
+        
+        if result['played'] is not None:
+            played_name = midi_number_to_note_name(result['played'])
+            print(f"  {i+1}. {status} Target: {target_name} | Played: {played_name} | Duration: {result['duration']:.2f}s | Velocity: {result['velocity']}")
+        else:
+            print(f"  {i+1}. {status} Target: {target_name} | Played: No note detected")
     
     return True
 
