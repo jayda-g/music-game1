@@ -13,8 +13,8 @@ import time
 def list_sheet_files():
     """List all MusicXML files in current directory"""
     musicxml_files = list(Path('.').glob('*.musicxml'))
-    xml_files = list(Path('.').glob('*.xml'))
-    return musicxml_files + xml_files
+    mxl_files = list(Path('.').glob('*.mxl'))
+    return musicxml_files + mxl_files
 
 def select_midi_device():
     """Let user select a MIDI device"""
@@ -44,7 +44,7 @@ def select_sheet_music():
     
     if not files:
         print("❌ No MusicXML files found in current directory.")
-        print("📝 Please add a .musicxml or .xml file or create one with MuseScore.")
+        print("📝 Please add a .musicxml or .mxl file or create one with MuseScore.")
         return None
     
     print("\n🎵 Available Sheet Music Files:")
