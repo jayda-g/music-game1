@@ -30,7 +30,7 @@ def select_midi_device():
             pass
         print("Invalid selection. Try again.")
 
-def generate_target_notes(count=5):
+def generate_target_notes(count=3):
     """
     Generate random target notes for the player to play
     
@@ -71,34 +71,38 @@ def listen_for_single_note(midi_handler, timeout=5):
         Dictionary with note info or None if timeout
     """
     # Variables to track note state
-    note_data = {'note': None, 'velocity': 0, 'on_time': None, 'off_time': None}
+    note_data = {'note': None, 'velocity': 0, 'on_time': None}
+    start_time = time.time()
     
     # Callback to handle MIDI messages
     def note_callback(midi_note, msg_type):
         if msg_type == 'note_on':
-            # Note was pressed
-            note_data['note'] = midi_note.note
-            note_data['velocity'] = midi_note.velocity
-            note_data['on_time'] = midi_note.timestamp
-        elif msg_type == 'note_off':
-            # Note was released
-            note_data['off_time'] = midi_note.timestamp
+            # Note was pressed (only record first press)
+            if note_data['on_time'] is None:
+                note_data['note'] = midi_note.note
+                note_data['velocity'] = midi_note.velocity
+                note_data['on_time'] = time.time()
     
     # Listen for the timeout duration
     midi_handler.recorded_notes = []  # Clear previous notes
     midi_handler.listen(duration=timeout, callback=note_callback)
     
-    # Check if we got a note
-    if note_data['note'] is not None and note_data['off_time'] is not None:
+    end_time = time.time()
+    
+    # Check if we got a note press
+    if note_data['note'] is not None and note_data['on_time'] is not None:
+        # Calculate duration from press to end of listening window
+        duration = end_time - note_data['on_time']
+        
         return {
             'note': note_data['note'],
             'velocity': note_data['velocity'],
-            'duration': note_data['off_time'] - note_data['on_time']
+            'duration': duration
         }
     
     return None
 
-def play_round(midi_device: str, round_num: int, notes_per_round: int = 5):
+def play_round(midi_device: str, round_num: int, notes_per_round: int = 3):
     """
     Play a single round of the note guessing game
     
