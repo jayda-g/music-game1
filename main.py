@@ -7,6 +7,7 @@ import sys
 import random
 from midi_handler import MIDIHandler
 import time
+from chords import chord_feedback, is_major_chord, major_chord_note_names, pitch_class_to_note_name
 
 def select_midi_device():
     """Let user select a MIDI device"""
@@ -59,148 +60,77 @@ def midi_number_to_note_name(midi_num):
     note = note_names[midi_num % 12]
     return f"{note}{octave}"
 
-def listen_for_single_note(midi_handler, timeout=5):
-    """
-    Listen for a single note press and release
-    
-    Args:
-        midi_handler: MIDIHandler instance
-        timeout: Maximum seconds to listen
-    
-    Returns:
-        Dictionary with note info or None if timeout
-    """
-    # Variables to track note state
-    note_data = {'note': None, 'velocity': 0, 'on_time': None}
-    start_time = time.time()
-    
-    # Callback to handle MIDI messages
-    def note_callback(midi_note, msg_type):
-        if msg_type == 'note_on':
-            # Note was pressed (only record first press)
-            if note_data['on_time'] is None:
-                note_data['note'] = midi_note.note
-                note_data['velocity'] = midi_note.velocity
-                note_data['on_time'] = time.time()
-    
-    # Listen for the timeout duration
-    midi_handler.recorded_notes = []  # Clear previous notes
-    midi_handler.listen(duration=timeout, callback=note_callback)
-    
-    end_time = time.time()
-    
-    # Check if we got a note press
-    if note_data['note'] is not None and note_data['on_time'] is not None:
-        # Calculate duration from press to end of listening window
-        duration = end_time - note_data['on_time']
-        
-        return {
-            'note': note_data['note'],
-            'velocity': note_data['velocity'],
-            'duration': duration
-        }
-    
-    return None
 
-def play_round(midi_device: str, round_num: int, notes_per_round: int = 3):
+def listen_for_chord(midi_handler, timeout=5):
     """
-    Play a single round of the note guessing game
-    
-    Args:
-        midi_device: Selected MIDI device name
-        round_num: Current round number
-        notes_per_round: Number of notes to play in this round
+    Listen for multiple simultaneous notes and return the distinct note numbers.
     """
-    
-    # Initialize MIDI handler
-    print(f"\n🎹 Initializing MIDI for Round {round_num}...")
+    chord_notes = set()
+    note_velocities = {}
+
+    def note_callback(midi_note, msg_type):
+        if msg_type == 'note_on' and midi_note.velocity > 0:
+            chord_notes.add(midi_note.note)
+            note_velocities[midi_note.note] = max(
+                note_velocities.get(midi_note.note, 0),
+                midi_note.velocity
+            )
+
+    midi_handler.recorded_notes = []
+    midi_handler.listen(duration=timeout, callback=note_callback)
+
+    if not chord_notes:
+        return None
+
+    return {
+        'notes': sorted(chord_notes),
+        'velocities': note_velocities
+    }
+
+def play_chord_round(midi_device: str, root_note: str = 'C', timeout: int = 8):
+    """
+    Play one major chord round.
+    """
+    print(f"\n🎹 Initializing MIDI for chord round...")
     midi_handler = MIDIHandler(midi_device)
     if not midi_handler.connect():
         return False
-    
-    # Generate target notes
-    print(f"\n📝 Generating {notes_per_round} random notes...")
-    target_notes = generate_target_notes(notes_per_round)
-    target_note_names = [midi_number_to_note_name(note) for note in target_notes]
-    
-    print(f"\n✅ Ready to play! You will play {notes_per_round} notes.")
-    print(f"📋 Target notes: {', '.join(target_note_names)}\n")
-    
-    # Play each note
-    results = []
-    
-    for i, target_midi in enumerate(target_notes):
-        target_name = target_note_names[i]
-        print(f"\n🎵 Note {i+1}/{notes_per_round}: Play {target_name}")
-        print("   (Press ENTER when ready, then play the note)")
-        input()
-        
-        # Listen for a single note with timeout
-        print("   🎧 Listening for 5 seconds...")
-        note_result = listen_for_single_note(midi_handler, timeout=5)
-        
-        if note_result:
-            # We got a note!
-            played_midi = note_result['note']
-            velocity = note_result['velocity']
-            hold_duration = note_result['duration']
-            is_correct = (played_midi == target_midi)
-            
-            played_name = midi_number_to_note_name(played_midi)
-            
-            # Determine feedback
-            if is_correct:
-                print(f"      ✅ Correct! Played {played_name}")
-            else:
-                print(f"      ❌ Wrong! Played {played_name} instead of {target_name}")
-            
-            print(f"      ⏱️  Held for {hold_duration:.2f}s")
-            print(f"      💪 Velocity: {velocity}/127")
-            
-            # Store result
-            result = {
-                'target': target_midi,
-                'played': played_midi,
-                'correct': is_correct,
-                'duration': hold_duration,
-                'velocity': velocity
-            }
-            results.append(result)
+
+    root_note = root_note.upper()
+    target_notes = major_chord_note_names(root_note)
+    chord_name = f"{root_note} major"
+
+    print(f"\n✅ Ready to play a major chord.")
+    print(f"📋 Target chord: {chord_name} ({', '.join(target_notes)})\n")
+    print("   (Press ENTER when ready, then play the chord)")
+    input()
+
+    print(f"   🎧 Listening for {timeout} seconds...")
+    chord_result = listen_for_chord(midi_handler, timeout=timeout)
+
+    if chord_result:
+        played_notes = chord_result['notes']
+        played_names = [midi_number_to_note_name(n) for n in played_notes]
+        feedback = chord_feedback(played_notes, root_note)
+
+        is_correct = not feedback['missing'] and not feedback['extra']
+
+        if is_correct:
+            print(f"      ✅ Correct chord! You played {chord_name}.")
         else:
-            # Timeout - no note detected
-            print(f"      ❌ No note detected - timeout!")
-            result = {
-                'target': target_midi,
-                'played': None,
-                'correct': False,
-                'duration': 0,
-                'velocity': 0
-            }
-            results.append(result)
-    
-    # Disconnect MIDI
+            print(f"      ❌ Incorrect chord.")
+            if feedback['missing']:
+                missing_names = [pitch_class_to_note_name(pc) for pc in sorted(feedback['missing'])]
+                print(f"      Missing notes: {', '.join(missing_names)}")
+            if feedback['extra']:
+                extra_names = [pitch_class_to_note_name(pc) for pc in sorted(feedback['extra'])]
+                print(f"      Extra notes: {', '.join(extra_names)}")
+
+        print(f"      Played notes: {', '.join(played_names)}")
+    else:
+        print(f"      ❌ No notes detected - timeout!")
+
     midi_handler.disconnect()
-    
-    # Print summary
-    print("\n" + "="*50)
-    print(f"📊 ROUND {round_num} RESULTS")
-    print("="*50)
-    
-    correct_count = sum(1 for r in results if r['correct'])
-    print(f"Correct: {correct_count}/{notes_per_round}")
-    print(f"Accuracy: {(correct_count / notes_per_round * 100):.1f}%")
-    
-    print("\n📝 Detailed Breakdown:")
-    for i, result in enumerate(results):
-        status = "✅" if result['correct'] else "❌"
-        target_name = midi_number_to_note_name(result['target'])
-        
-        if result['played'] is not None:
-            played_name = midi_number_to_note_name(result['played'])
-            print(f"  {i+1}. {status} Target: {target_name} | Played: {played_name} | Duration: {result['duration']:.2f}s | Velocity: {result['velocity']}")
-        else:
-            print(f"  {i+1}. {status} Target: {target_name} | Played: No note detected")
-    
     return True
 
 def main():
@@ -209,26 +139,32 @@ def main():
     print("║     🎵 MIDI NOTE GUESSING GAME 🎵     ║")
     print("║    Play the notes we ask for!          ║")
     print("╚════════════════════════════════════════╝\n")
-    
-    # Select MIDI device
+
     midi_device = select_midi_device()
     if not midi_device:
         return
-    
-    # Play rounds
+
     round_num = 1
     while True:
-        play_round(midi_device, round_num)
-        
-        # Ask if player wants to play again
+        print("\nChoose mode:")
+        print("  1) Single-note game")
+        print("  2) Major chord game (C major by default)")
+        mode = input("Select 1 or 2: ").strip()
+
+        if mode == '2':
+            play_chord_round(midi_device, root_note='C', timeout=8)
+        else:
+            play_round(midi_device, round_num)
+
         print("\n" + "="*50)
         play_again = input("Play another round? (yes/no): ").strip().lower()
         if play_again not in ['yes', 'y']:
             print("\n👋 Thanks for playing!")
             break
-        
+
         round_num += 1
 
+        
 if __name__ == "__main__":
     try:
         main()
